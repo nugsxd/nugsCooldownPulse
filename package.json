@@ -1,0 +1,11 @@
+{
+  "name": "nugscooldownpulse",
+  "private": true,
+  "description": "Static checks for the nugsCooldownPulse addon. Not shipped to players.",
+  "scripts": {
+    "test": "node .tools/run.js"
+  },
+  "dependencies": {
+    "luaparse": "^0.3.1"
+  }
+}

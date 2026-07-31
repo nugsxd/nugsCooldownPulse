@@ -99,6 +99,31 @@ combat on a target dummy, that is where the answers matter.
 Copy the `nugsCooldownPulse` folder into
 `World of Warcraft\_retail_\Interface\AddOns\`, then `/reload` or restart the game.
 
+## Checks
+
+Every push runs static analysis over the Lua in this repo, and the same checks run
+locally before a release. To run them yourself:
+
+```
+npm install
+npm test
+```
+
+Each check exists because of a bug that got as far as a build, and each script says
+which one at the top of the file:
+
+| | |
+|---|---|
+| `check.js` | every file parses |
+| `fwdref.js` | a name used above the `local` that declares it - which silently reads a nil global |
+| `selfref.js` | `local x = f(function() ... x ... end)`, where the closure captures nil rather than `x` |
+| `wowcheck.js` | taint, secret values, and the other WoW-specific ways Lua that looks fine still breaks |
+| `globalwrite.js` | assignments that never declared a local - advisory, since SavedVariables have to be globals |
+
+Two more run before release but are not in this repo, because they need a copy of
+Ketho's WoW API annotations: a check that no call has been moved or removed in the
+current patch, and a full `lua-language-server` pass.
+
 ## License
 
 Copyright (c) 2026 nugs. All Rights Reserved. See [LICENSE](LICENSE).
