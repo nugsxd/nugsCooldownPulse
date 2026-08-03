@@ -170,14 +170,33 @@ CDP.SOUNDS = {
 --
 -- It stays available to anyone who already set one, and to `/ncp sound file`, so
 -- nobody's cue goes quiet because the option stopped being advertised.
+--
+-- UPDATE: the reasoning above was right about the friction and wrong about one fact.
+-- A typed path CAN be verified - see the Custom sounds block further down - so the
+-- shrug is gone and named custom cues are now first class. `soundFile` survives as
+-- the migration source and nothing else.
+--
+-- The player's own come FIRST, ahead of the stock cues and anything LibSharedMedia
+-- has. A list that opens with a dozen cues somebody else chose buries the one you
+-- added thirty seconds ago, and a long LSM pack pushes it off the bottom entirely.
+--
+-- The old single `soundFile` no longer gets a row of its own: InitDB moves it into
+-- customSounds on load, so it is already in the list below under its own name.
 function CDP.SoundList()
     local list, seen = {}, {}
-    for _, s in ipairs(CDP.SOUNDS) do
-        list[#list + 1] = s
-        seen[s.name] = true
+
+    for _, e in ipairs(CDP.CustomSoundList()) do
+        -- Same prefixing convention as lsm: below, so a player's cue name can never
+        -- collide with a stock key.
+        list[#list + 1] = { key = "file:" .. e.name, name = e.name, path = e.path }
+        seen[e.name] = true
     end
-    if CDP.db and CDP.db.soundFile and CDP.db.soundFile ~= "" then
-        list[#list + 1] = { key = "custom", name = "Custom file", id = nil }
+
+    for _, s in ipairs(CDP.SOUNDS) do
+        if not seen[s.name] then
+            list[#list + 1] = s
+            seen[s.name] = true
+        end
     end
 
     local LSM = _G.LibStub and _G.LibStub("LibSharedMedia-3.0", true)
@@ -196,6 +215,124 @@ function CDP.SoundList()
         end
     end
     return list
+end
+
+--------------------------------------------------------------------------------
+-- Custom sounds
+--
+-- The WoW Lua sandbox has no filesystem API - no directory listing, no existence
+-- check, nothing. An addon therefore cannot notice that a player dropped an .ogg
+-- into a folder, and no amount of UI changes that. It is also why a LibSharedMedia
+-- pack is Lua code: the Register call IS the discovery.
+--
+-- What the client will do is play any file you name outright, and tell you whether
+-- it worked. Measured on 12.0.7:
+--
+--   PlaySoundFile("Interface/AddOns/EXBoss/Sound/testsplat.ogg", "Master")
+--       -> true, 4856          a real file
+--       -> (nothing at all)    a missing one - zero return values, not false
+--
+-- So a typed path can be verified, which is the whole reason this is worth having.
+-- The player pastes a path, hears it, names it, and the name joins the cue list.
+--------------------------------------------------------------------------------
+
+-- A falsy return from PlaySoundFile means "did not play", which is NOT the same as
+-- "file is missing" - a muted client may well produce the same answer. Reading the
+-- two CVars first means the message is right either way, and means we never have to
+-- know which of the two cases a nil actually was.
+function CDP.VerifySound(path)
+    path = tostring(path or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if path == "" then return false, "Paste the path to an .ogg or .mp3 file." end
+
+    if (GetCVar("Sound_EnableAllSound") or "1") == "0" then
+        return false, "Your game sound is turned off, so nothing can be tested yet."
+    end
+    if (tonumber(GetCVar("Sound_MasterVolume")) or 1) <= 0 then
+        return false, "Master volume is at zero, so nothing can be tested yet."
+    end
+
+    local ok = PlaySoundFile(path, "Master")
+    if ok then return true, path end
+    return false, "No file there. Check the folder name, every subfolder, and that "
+        .. "the path ends in .ogg or .mp3. A file added while the game was running "
+        .. "needs a full restart, not a /reload."
+end
+
+-- Every nugs addon writes its own library into the shared registry, so a cue added
+-- in one shows up in the others. The registry is a plain global that each addon
+-- creates for itself, so this works with nugsSuite absent - it is not the suite.
+--
+-- Deduped by path rather than by name: the same file added on two addons under two
+-- names is one sound, and showing it twice is just noise.
+function CDP.CustomSoundList()
+    local list, seenPath = {}, {}
+
+    local function take(entries)
+        -- Either shape is accepted: a plain list, or a function returning one. The
+        -- nugs addons publish the function form, since the table they would otherwise
+        -- hand over is replaced wholesale by a profile import.
+        if type(entries) == "function" then
+            local ok, resolved = pcall(entries)
+            entries = ok and resolved or nil
+        end
+        if type(entries) ~= "table" then return end
+        for _, e in ipairs(entries) do
+            if type(e) == "table" and type(e.name) == "string"
+               and type(e.path) == "string" and e.path ~= "" and not seenPath[e.path] then
+                seenPath[e.path] = true
+                list[#list + 1] = { name = e.name, path = e.path }
+            end
+        end
+    end
+
+    take(CDP.db and CDP.db.customSounds)
+    local reg = _G.nugsSuiteRegistry
+    if type(reg) == "table" then
+        for name, entry in pairs(reg) do
+            if name ~= ADDON_NAME and type(entry) == "table" then take(entry.sounds) end
+        end
+    end
+    return list
+end
+
+function CDP.AddCustomSound(name, path)
+    name = tostring(name or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if name == "" then return false, "Give it a name." end
+
+    local db = CDP.db
+    db.customSounds = db.customSounds or {}
+    for _, e in ipairs(db.customSounds) do
+        if e.name == name then return false, "You already have a cue called that." end
+    end
+    -- A custom cue that shares a name with a stock or LibSharedMedia one would be
+    -- unreachable: SoundList skips a name it has already seen.
+    for _, s in ipairs(CDP.SoundList()) do
+        if s.name == name then return false, "That name is already taken by a cue in the list." end
+    end
+
+    db.customSounds[#db.customSounds + 1] = { name = name, path = path }
+    return true
+end
+
+function CDP.RemoveCustomSound(name)
+    local db = CDP.db
+    for i, e in ipairs(db.customSounds or {}) do
+        if e.name == name then
+            table.remove(db.customSounds, i)
+            -- Settings pointing at the cue that just went away would fail silently on
+            -- the next pulse, which is the worst way to find out.
+            local key = "file:" .. name
+            if db.soundKey == key then db.soundKey = CDP.defaults.soundKey end
+            local char = CDP.char
+            if char and char.sounds then
+                for entryKey, assigned in pairs(char.sounds) do
+                    if assigned == key then char.sounds[entryKey] = nil end
+                end
+            end
+            return true
+        end
+    end
+    return false
 end
 
 --------------------------------------------------------------------------------
@@ -315,6 +452,10 @@ CDP.defaults = {
     soundMode     = "one",
     soundKey      = "readycheck",
     soundFile     = "",
+    -- Sound files the player pointed us at themselves: { name = , path = }.
+    -- Account wide, so a cue added on one character is there on all of them. See
+    -- the Custom sounds block above CDP.VerifySound for why this exists at all.
+    customSounds  = {},
     locked        = true,
     anchor        = { point = "CENTER", x = 0, y = 150 },
 }
@@ -355,6 +496,24 @@ local function InitDB()
     CDP.db   = CooldownPulseDB
     CDP.char = CooldownPulseCharDB
     CooldownPulseDB.profiles = CooldownPulseDB.profiles or {}
+
+    -- The old single custom file becomes the first entry in the library, keeping the
+    -- cue anyone had set. `soundFile` is left in place rather than cleared: a player
+    -- who downgrades should get their sound back, not silence.
+    local db = CooldownPulseDB
+    if db.soundFile and db.soundFile ~= "" and not db.customSoundsMigrated then
+        db.customSoundsMigrated = true
+        db.customSounds = db.customSounds or {}
+        local already = false
+        for _, e in ipairs(db.customSounds) do
+            if e.path == db.soundFile then already = true break end
+        end
+        if not already then
+            db.customSounds[#db.customSounds + 1] =
+                { name = "Custom file", path = db.soundFile }
+        end
+        if db.soundKey == "custom" then db.soundKey = "file:Custom file" end
+    end
 end
 
 --------------------------------------------------------------------------------
@@ -1063,6 +1222,11 @@ local function RegisterWithSuite()
         Open      = function() CDP.ToggleOptions() end,
         GetDB     = function() return CooldownPulseDB, CDP.defaults end,
         GetCharDB = function() return CooldownPulseCharDB, CDP.charDefaults end,
+        -- Published so the other nugs addons can offer the same cues. A function
+        -- rather than the table itself: this runs before the saved variables exist,
+        -- and a profile import replaces db.customSounds outright, either of which
+        -- would leave a captured reference pointing at the wrong table forever.
+        sounds    = function() return CDP.db and CDP.db.customSounds end,
         -- `learned` is a measured cooldown cache: machine written, per character,
         -- and meaningless to anybody else. The spell list and priority order are
         -- the parts of this addon worth sharing, and they stay.
@@ -1241,10 +1405,23 @@ SlashCmdList["NUGSCOOLDOWNPULSE"] = function(msg)
             db.soundEnabled = (sub == "on")
             CDP.Print("sound " .. sub .. ".")
         elseif sub == "file" and arg ~= "" then
-            db.soundFile = arg
-            db.soundKey  = "custom"
+            -- Verified before it is kept. The old version of this took any string and
+            -- the player found out it was wrong by hearing nothing.
+            local ok, why = CDP.VerifySound(arg)
+            if not ok then
+                CDP.Print(why)
+                return
+            end
+            local name = arg:match("([^/\\]+)%.%w+$") or "Custom file"
+            local added, addWhy = CDP.AddCustomSound(name, arg)
+            if not added then
+                -- Already in the library under this name: select it rather than
+                -- refusing, since asking for it twice plainly means "use this one".
+                CDP.Print(addWhy)
+            end
+            db.soundKey     = "file:" .. name
             db.soundEnabled = true
-            CDP.Print("custom sound set to: " .. arg)
+            CDP.Print("custom sound '" .. name .. "' set from: " .. arg)
         elseif sub == "one" or sub == "per" then
             db.soundMode = sub
             db.soundEnabled = true

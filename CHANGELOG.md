@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.19.0
+
+- **Use your own sound files.** Open any cue list, pick **+ Add your own**, paste the
+  path to an `.ogg` or `.mp3`, and press Test. It plays straight away if the path is
+  right, and says what is wrong if it is not. Name it and it joins the cue list — so
+  it can be the main cue, or assigned to a single cooldown in the Sounds pane.
+- **Test really does test.** The client returns nothing at all for a file it cannot
+  find, so the path is verified before it is kept rather than failing silently mid
+  pull. The game's own sound settings are checked first, so a muted client is reported
+  as a muted client instead of being blamed on the path.
+- **Cues are shared with the other nugs addons.** A sound added here shows up in
+  nugsCastBars and the other way round, through the same plain global the addons
+  already use to find each other. Neither depends on the other, and nugsSuite is not
+  required for it.
+- **Your own cues are at the top of the list**, with **+ Add your own sound file** as
+  the first row. With a LibSharedMedia pack loaded that list runs to dozens, and
+  anything at the bottom of it was found by scrolling or not at all.
+- **The scroll bar can be grabbed and dragged.** It was drawn as a texture, and a
+  texture cannot take mouse input at all - so it showed you where you were in a list
+  and gave you no way to act on it, leaving the wheel as the only way down a long one.
+  It is a real bar now: drag the thumb, or click the track to page toward the click.
+  The wheel still works exactly as before.
+- `/ncp sound file <path>` now verifies the path, names the cue after the file, and
+  adds it to the library instead of filling a single unnamed slot. An existing custom
+  file is carried over automatically and keeps working.
+- **Lists close when you click away from them.** They stayed open until something was
+  selected or the button was pressed again.
+- **Fixed: a list could be cut off at the edge of the panel it opened from.** It was
+  attached to whichever frame its button sat in, and when that was a scrolling pane the
+  list was clipped by it - a scroll frame clips its children. Lists now hang off the
+  screen itself, so they overhang the window instead of being cut in half.
+
 ## 0.18.1
 
 - **Fixed: a pop-up list came up empty the first time and only filled in on the
