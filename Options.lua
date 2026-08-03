@@ -521,6 +521,7 @@ local function ToggleFontPicker(parent, anchorTo, onPick)
         fontPopup:SetSize(232, 268)
         fontPopup:SetFrameStrata("FULLSCREEN_DIALOG")
         fontPopup:EnableMouse(true)
+        fontPopup:SetClampedToScreen(true)
         PopupChrome(fontPopup)
         fontPopup.scroll = ScrollArea(fontPopup)
         fontPopup.scroll:SetPoint("TOPLEFT", 5, -5)
@@ -575,7 +576,14 @@ local function ToggleFontPicker(parent, anchorTo, onPick)
     fontPopup.scroll:UpdateBar()
 
     fontPopup:ClearAllPoints()
-    fontPopup:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, -2)
+    -- Drop down if there is room, otherwise open upwards. Clamping alone would slide
+    -- the list over the button that opened it, which hides the thing being changed.
+    local below = (anchorTo:GetBottom() or 0) - fontPopup:GetHeight()
+    if below < 20 then
+        fontPopup:SetPoint("BOTTOMLEFT", anchorTo, "TOPLEFT", 0, 2)
+    else
+        fontPopup:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, -2)
+    end
     fontPopup:Show()
 end
 
@@ -1916,8 +1924,159 @@ function CDP.RefreshOptions()
     RefreshList()
 end
 
+--------------------------------------------------------------------------------
+-- Move bar
+--
+-- Placing the pulse means dragging a box that the settings window is usually sitting
+-- on top of, so the window has to be shoved aside first and dragged back after. The
+-- window gets out of the way on its own now: unlocking hides it and puts up a small
+-- bar instead, and locking brings it back exactly where it was.
+--
+-- The bar carries the three things that are actually useful while positioning -
+-- lock, reset, test - so it is a small toolbar rather than a single button. Test in
+-- particular matters: an anchor with nothing in it is hard to place.
+--
+-- It is deliberately not a saved position. It moves if it is in the way, and starts
+-- near the top of the screen next time; persisting it would mean a new saved
+-- variable, and a setting nobody would ever go looking for.
+--------------------------------------------------------------------------------
+local moveBar
+
+local function BuildMoveBar()
+    local f = CreateFrame("Frame", "nugsCooldownPulseMoveBar", UIParent)
+    f:SetSize(300, 78)
+    f:SetPoint("TOP", UIParent, "TOP", 0, -60)
+    f:SetFrameStrata("DIALOG")
+    f:SetClampedToScreen(true)
+    f:SetMovable(true)
+    f:EnableMouse(true)
+    f:RegisterForDrag("LeftButton")
+    f:SetScript("OnDragStart", f.StartMoving)
+    f:SetScript("OnDragStop", f.StopMovingOrSizing)
+    -- PopupChrome draws its own backdrop plus the storm-blue edge, so it is the whole
+    -- treatment - calling Backdrop as well would layer a second one underneath.
+    PopupChrome(f)
+
+    local title = Label(f, "Placing the pulse", "GameFontNormal", C.accent)
+    title:SetPoint("TOPLEFT", 10, -9)
+
+    local hint = Label(f, "Drag the blue box to where you want it.",
+                       "GameFontDisableSmall", C.faint)
+    hint:SetPoint("TOPLEFT", 10, -28)
+
+    -- Lock is the way out of this state, so it is first and it is the wide one.
+    local lockBtn = Button(f, "Lock anchor", 110, 22, function()
+        CDP.Pulse:ToggleLock(true)
+    end)
+    lockBtn:SetPoint("BOTTOMLEFT", 10, 10)
+
+    local resetBtn = Button(f, "Reset position", 105, 22, function()
+        CDP.db.anchor = { point = "CENTER", x = 0, y = 150 }
+        CDP.Pulse:ApplySettings()
+        CDP.Pulse:Test()
+    end)
+    resetBtn:SetPoint("LEFT", lockBtn, "RIGHT", 6, 0)
+
+    local testBtn = Button(f, "Test", 55, 22, function() CDP.Pulse:Test() end)
+    testBtn:SetPoint("LEFT", resetBtn, "RIGHT", 6, 0)
+
+    -- Escape locks rather than just dismissing the bar. Hiding it while the anchor
+    -- was still unlocked would leave the state with nothing on screen to end it.
+    f:EnableKeyboard(true)
+    f:SetPropagateKeyboardInput(true)
+    f:SetScript("OnKeyDown", function(self, key)
+        if key == "ESCAPE" and not InCombatLockdown() then
+            self:SetPropagateKeyboardInput(false)
+            CDP.Pulse:ToggleLock(true)
+        else
+            self:SetPropagateKeyboardInput(true)
+        end
+    end)
+
+    return f
+end
+
+-- Whether the settings window was open when the anchor was unlocked, so locking can
+-- put it back only if it was there to begin with. Unlocking from the slash command
+-- with nothing open should not conjure a window on lock.
+local windowWasOpen = false
+
+function CDP.OnLockChanged(locked)
+    if not locked then
+        if window and window:IsShown() then
+            windowWasOpen = true
+            window:Hide()
+        end
+        moveBar = moveBar or BuildMoveBar()
+        moveBar:SetPropagateKeyboardInput(true)
+        moveBar:Show()
+    else
+        if moveBar then moveBar:Hide() end
+        if windowWasOpen then
+            windowWasOpen = false
+            if window then window:Show() end
+        end
+    end
+end
+
+-- Builds the window once and hooks it once. Hooked here rather than inside
+-- BuildWindow because moveBar is declared in this block: a closure written above its
+-- declaration would bind to a nil global instead, silently, until somebody clicked.
+--
+-- The two hooks keep the pair consistent whichever one the player acts on. Opening
+-- settings while the anchor is unlocked should not leave two lock buttons on screen,
+-- and closing settings while unlocked should put the bar back rather than leaving the
+-- state with no way out of it.
+--
+-- Every entry point goes through here rather than calling BuildWindow directly. There
+-- is more than one, and the one that was not doing this would have built a window
+-- with no hooks on it at all.
+local function EnsureWindow()
+    if window then return end
+    BuildWindow()
+    window:HookScript("OnShow", function()
+        if moveBar then moveBar:Hide() end
+    end)
+    window:HookScript("OnHide", function()
+        if not CDP.db.locked then CDP.OnLockChanged(false) end
+    end)
+end
+
+--------------------------------------------------------------------------------
+-- Combat
+--
+-- The settings window closes and the anchor locks the moment a fight starts.
+--
+-- Not because anything here would be blocked: none of these windows touch a secure
+-- frame, so nothing throws "action blocked" the way an addon driving action bars
+-- does. The reason is that both states put FAKE data on screen - unlocking runs a test pulse so the anchor has something to grab - and
+-- sample data during a real pull is worse than none, because it cannot be told apart
+-- from the real thing.
+--
+-- Nothing reopens when combat drops. A window appearing by itself while you are
+-- looting is worse than pressing a button.
+--------------------------------------------------------------------------------
+local combatWatch = CreateFrame("Frame")
+combatWatch:RegisterEvent("PLAYER_REGEN_DISABLED")
+combatWatch:SetScript("OnEvent", function()
+    if CDP.db and not CDP.db.locked then
+        -- SetLocked and OnLockChanged directly rather than ToggleLock: ToggleLock
+        -- prints, and a line of chat on every pull is noise.
+        --
+        -- Clearing windowWasOpen FIRST is the part that matters. OnLockChanged puts
+        -- the settings window back when it was open before the unlock, and doing that
+        -- as a fight starts is precisely the wrong moment - it would read as a window
+        -- popping open on every pull.
+        windowWasOpen = false
+        CDP.Pulse:SetLocked(true)
+        CDP.OnLockChanged(true)
+        if CDP.RefreshOptions then CDP.RefreshOptions() end
+    end
+    if window and window:IsShown() then window:Hide() end
+end)
+
 function CDP.ToggleOptions()
-    if not window then BuildWindow() end
+    EnsureWindow()
     if window:IsShown() then
         window:Hide()
     else
@@ -1954,7 +2113,7 @@ function CDP.InitOptions()
     open:SetText("Open nugsCooldownPulse options")
     open:SetScript("OnClick", function()
         if SettingsPanel and SettingsPanel:IsShown() then HideUIPanel(SettingsPanel) end
-        if not window then BuildWindow() end
+        EnsureWindow()
         window:Show()
     end)
 

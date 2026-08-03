@@ -259,6 +259,11 @@ function Pulse:ToggleLock(locked)
         self:Test()   -- give the box something to grab
     end
     if CDP.RefreshOptions then CDP.RefreshOptions() end
+    -- The options window gets out of the way while you are placing things, and a
+    -- small bar takes its place. Options.lua owns that; this is the one place both
+    -- the button and the slash command pass through, so it is the one place to say
+    -- the lock changed. Guarded because the options file is only loaded on demand.
+    if CDP.OnLockChanged then CDP.OnLockChanged(CDP.db.locked) end
 end
 
 function Pulse:IsLocked()

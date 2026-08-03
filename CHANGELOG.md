@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.19.1
+
+- **The settings window gets out of the way while you place the pulse.** Unlocking the
+  anchor hides it and puts up a small bar instead - Lock anchor, Reset position, Test -
+  and locking brings the window back exactly where it was. Placing the icon meant
+  dragging a box the window was usually sitting on top of, so the window had to be
+  shoved aside and dragged back every time.
+- The bar can be dragged if it is in the way, and Escape locks the anchor rather than
+  just dismissing it - hiding it while the anchor was still unlocked would have left
+  nothing on screen to end that state.
+- `/ncp unlock` puts the bar up too. If the settings window was not open when you
+  unlocked, locking does not conjure one.
+- **Fixed: a dropdown could run off the bottom of a smaller screen.** Four of them
+  dropped straight down from their button with no check that there was room below and
+  no clamping, while the lists beside them already handled it. They now open upwards
+  when there is no room, and are clamped as a backstop - clamping alone would slide a
+  list up over the button that opened it, hiding the thing being changed.
+- **The settings window closes when a fight starts, and the anchor locks.** Not because
+  anything here would be blocked - none of these windows touch a secure frame, so
+  nothing throws "action blocked" the way an addon driving action bars does. The
+  reason is that both states put fake data on screen: unlocking runs a test pulse so the anchor has something to grab, and sample
+  data during a real pull cannot be told apart from the real thing. Nothing reopens
+  when combat drops.
+
 ## 0.19.0
 
 - **Use your own sound files.** Open any cue list, pick **+ Add your own**, paste the
