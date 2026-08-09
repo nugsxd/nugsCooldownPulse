@@ -46,6 +46,18 @@ local widgets = {}   -- everything with a :Refresh()
 --------------------------------------------------------------------------------
 -- Widget helpers
 --------------------------------------------------------------------------------
+-- SetPropagateKeyboardInput is protected during combat. None of these frames go
+-- anywhere near the secure system, but the call itself is off limits mid-fight and
+-- throws "action blocked" - which is what the player sees, attributed to this addon.
+--
+-- Skipping it is harmless. Propagation stays wherever it already was, and the only
+-- thing lost is Escape being intercepted during a fight, which is the behaviour you
+-- would want anyway.
+local function SafePropagate(frame, value)
+    if InCombatLockdown() then return end
+    frame:SetPropagateKeyboardInput(value)
+end
+
 local function Backdrop(frame, color, borderAlpha)
     local bg = frame:CreateTexture(nil, "BACKGROUND")
     bg:SetAllPoints()
@@ -460,13 +472,13 @@ local function AttachPopupBehaviour(popup, closeOnOutside)
     -- only for the Escape that is actually being handled, which is what stops the same
     -- press also reaching CloseSpecialWindows and shutting the window.
     popup:EnableKeyboard(true)
-    popup:SetPropagateKeyboardInput(true)
+    SafePropagate(popup, true)
     popup:SetScript("OnKeyDown", function(self, key)
         if key == "ESCAPE" and not InCombatLockdown() then
-            self:SetPropagateKeyboardInput(false)
+            SafePropagate(self, false)
             self:Hide()
         else
-            self:SetPropagateKeyboardInput(true)
+            SafePropagate(self, true)
         end
     end)
 
@@ -482,6 +494,10 @@ local function AttachPopupBehaviour(popup, closeOnOutside)
         local _, relativeTo = self:GetPoint(1)
         self.owner = relativeTo
         self:SetScript("OnUpdate", WatchOwner)
+        -- Propagation may have been left off if the last Escape landed as combat
+        -- started and the reset on hide was skipped. Without this the list would open
+        -- swallowing every keypress.
+        SafePropagate(self, true)
         if catcher then
             catcher:SetFrameStrata(self:GetFrameStrata())
             catcher:SetFrameLevel(110)
@@ -491,7 +507,7 @@ local function AttachPopupBehaviour(popup, closeOnOutside)
     end)
     popup:HookScript("OnHide", function(self)
         self:SetScript("OnUpdate", nil)
-        self:SetPropagateKeyboardInput(true)
+        SafePropagate(self, true)
         if catcher then catcher:Hide() end
     end)
     return popup
@@ -1983,13 +1999,13 @@ local function BuildMoveBar()
     -- Escape locks rather than just dismissing the bar. Hiding it while the anchor
     -- was still unlocked would leave the state with nothing on screen to end it.
     f:EnableKeyboard(true)
-    f:SetPropagateKeyboardInput(true)
+    SafePropagate(f, true)
     f:SetScript("OnKeyDown", function(self, key)
         if key == "ESCAPE" and not InCombatLockdown() then
-            self:SetPropagateKeyboardInput(false)
+            SafePropagate(self, false)
             CDP.Pulse:ToggleLock(true)
         else
-            self:SetPropagateKeyboardInput(true)
+            SafePropagate(self, true)
         end
     end)
 
@@ -2001,14 +2017,24 @@ end
 -- with nothing open should not conjure a window on lock.
 local windowWasOpen = false
 
+-- Re-entrancy guard. Unlocking hides the settings window, and the window's OnHide
+-- hook calls straight back in here to put the move bar up - so a single unlock ran
+-- this function twice, nested, building and showing the bar from the inner call and
+-- then doing it again on the way out. Harmless while it worked, but it is what put a
+-- second SetPropagateKeyboardInput into the same click.
+local changingLock = false
+
 function CDP.OnLockChanged(locked)
+    if changingLock then return end
+    changingLock = true
+
     if not locked then
         if window and window:IsShown() then
             windowWasOpen = true
             window:Hide()
         end
         moveBar = moveBar or BuildMoveBar()
-        moveBar:SetPropagateKeyboardInput(true)
+        SafePropagate(moveBar, true)
         moveBar:Show()
     else
         if moveBar then moveBar:Hide() end
@@ -2017,6 +2043,8 @@ function CDP.OnLockChanged(locked)
             if window then window:Show() end
         end
     end
+
+    changingLock = false
 end
 
 -- Builds the window once and hooks it once. Hooked here rather than inside

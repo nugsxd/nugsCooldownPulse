@@ -251,6 +251,16 @@ function Pulse:SetLocked(locked)
 end
 
 function Pulse:ToggleLock(locked)
+    -- Unlocking mid-fight is refused, for the same reason a pull locks the anchor:
+    -- placing the pulse runs a test icon so there is something to grab, and fake
+    -- icons during a real pull cannot be told apart from real ones. The button and
+    -- the slash command both come through here, so this is the only place it needs
+    -- saying.
+    if not locked and InCombatLockdown() then
+        CDP.Print("the pulse cannot be placed during combat - try again after the fight.")
+        return
+    end
+
     self:SetLocked(locked)
     if locked then
         CDP.Print("anchor locked.")

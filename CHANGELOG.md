@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.19.2
+
+- **Fixed: "action blocked" when unlocking the anchor during combat.**
+  `SetPropagateKeyboardInput` - used so Escape closes a dropdown or the placement bar
+  rather than the window behind it - is protected during combat. Calling it mid-fight
+  throws a blocked-action error naming this addon, even though none of these frames go
+  anywhere near the secure system. Every call now skips itself in combat; the only
+  thing lost is Escape being intercepted during a fight, which is the right behaviour
+  anyway.
+- The same fault was waiting in the dropdown lists: with one open in combat, *any*
+  keypress would have thrown it, movement keys included.
+- **Placing the pulse is now refused during combat** rather than half-entered. It runs
+  a test icon so there is something to grab, and fake icons during a real pull cannot
+  be told apart from real ones - the same reason a pull locks the anchor.
+- Fixed a re-entrancy: unlocking hid the settings window, and the window's own hide
+  hook called straight back in, so a single click ran the lock-changed path twice,
+  nested.
+- **Ready for patch 12.1.** The .toc declares `120007, 120100`, so this is current
+  on live and on the 12.1 PTR at once rather than being flagged out of date on one of
+  them. Nothing here uses an API that 12.1 removes, and the unit calls that begin
+  returning secret values in 12.1 are guarded - a release check now enforces both, so
+  it stays true.
+
 ## 0.19.1
 
 - **The settings window gets out of the way while you place the pulse.** Unlocking the
