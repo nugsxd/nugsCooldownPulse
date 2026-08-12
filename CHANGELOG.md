@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.19.3
+
+- Now built for patch 12.1 only. 12.1 is live, and listing the previous patch
+  alongside it claimed support for a client nobody is on any more.
+
 ## 0.19.2
 
 - **Fixed: "action blocked" when unlocking the anchor during combat.**
