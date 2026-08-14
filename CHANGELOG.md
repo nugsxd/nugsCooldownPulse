@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.19.4
+
+- Grouped under a **nugsAddons** category in the game's AddOns list, so the whole
+  set folds up together instead of scattering through the alphabet.
+
 ## 0.19.3
 
 - Now built for patch 12.1 only. 12.1 is live, and listing the previous patch
