@@ -3,7 +3,7 @@
 ## Category: nugsAddons
 ## Notes: Pulses an icon on screen the moment one of your cooldowns comes back up.|nSupports Masque and LibSharedMedia fonts.|nCreated by nugs.
 ## Author: nugs
-## Version: 0.19.4
+## Version: 0.21.4
 ## IconTexture: Interface\AddOns\nugsCooldownPulse\icon
 
 # NOTE: if the addon list shows a blank icon, this BLP is not loading on your
@@ -29,4 +29,5 @@
 
 Core.lua
 Pulse.lua
+ActionGlow.lua
 Options.lua

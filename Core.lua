@@ -458,6 +458,22 @@ CDP.defaults = {
     customSounds  = {},
     locked        = true,
     anchor        = { point = "CENTER", x = 0, y = 150 },
+
+    -- Glowing the real action bar button, alongside the on-screen pulse. Off by
+    -- default: it draws on frames this addon does not own, and that should be an
+    -- explicit choice rather than something that appears after an update.
+    actionGlow    = false,
+    glowColor     = { 0.35, 0.72, 1.00, 1 },
+    glowSize      = 8,      -- how far the glow spills past the button edge
+    glowHold      = 0.8,    -- seconds before it fades
+
+    -- "one" glows every watched ability the same way. "per" glows only the ones you
+    -- have given a colour to, each in its own.
+    --
+    -- Same two modes as the sound cue above, and for the same reason: a glow on
+    -- everything is a bar that flickers constantly and stops meaning anything, so
+    -- the interesting setup is picking the three or four that actually matter.
+    glowMode      = "one",
 }
 
 CDP.charDefaults = {
@@ -476,6 +492,12 @@ CDP.charDefaults = {
     -- Per character, like spells and priority, because spell ids are class-specific
     -- and an account-wide table would be empty on every character but one.
     sounds   = {},
+
+    -- [entryKey] = { color = {r,g,b,a}, hold = seconds }, used only when
+    -- db.glowMode == "per". Absent means NO GLOW, on the same whitelist reasoning as
+    -- sounds above: a bar where everything glows is a bar that flickers constantly
+    -- and tells you nothing. Assigning a colour is how you say this one matters.
+    glows    = {},
 }
 
 local function CopyDefaults(dst, src)
@@ -873,6 +895,14 @@ function CDP.BuildWatch()
     for key in pairs(CDP.state) do
         if not watchedKeys[key] then CDP.state[key] = nil end
     end
+
+    -- The button map is keyed by watched ability, so it is only meaningful once this
+    -- list exists. Rebuilt here rather than on a timer: the two go stale together.
+    --
+    -- Only when the glow is actually switched on. This runs during login and on
+    -- every spellbook change, and walking every frame in the client on behalf of a
+    -- feature nobody has enabled is not a cost worth paying.
+    if CDP.Glow and CDP.db and CDP.db.actionGlow then CDP.Glow.Rebuild() end
 end
 
 function CDP.RebuildCatalog()
@@ -975,6 +1005,10 @@ function CDP.FireEntry(entry, why)
         CDP.Print("|cff80ff80pulse|r " .. tostring(entry.name) .. " (" .. why .. ")")
     end
     CDP.Pulse:Add(entry)
+    -- Same signal, second surface. Raised here rather than anywhere else so the
+    -- on-screen pulse and the button glow cannot disagree about whether an ability
+    -- is ready - including every reason above for NOT firing.
+    if CDP.Glow then CDP.Glow.Fire(entry) end
 end
 
 --------------------------------------------------------------------------------
@@ -1064,6 +1098,238 @@ local function HandleEntry(entry, st, now)
 end
 
 --------------------------------------------------------------------------------
+-- Action bar discovery
+--
+-- Groundwork for glowing a real action button when its cooldown comes back. Before
+-- any of that is worth building, one question has to be answered on real machines:
+-- can this addon FIND the buttons?
+--
+-- Guessing frame names does not survive contact with reality. Blizzard's are
+-- ActionButton1..12 and MultiBarBottomLeftButton1..12 and so on, but a large share
+-- of players run Bartender, Dominos, ElvUI or a UI suite that replaces the bars
+-- entirely, and every one of those names its buttons differently.
+--
+-- So nothing is named here. Every frame in the client is walked and asked whether it
+-- carries an "action" attribute, which is what MAKES a frame an action button - it
+-- is how the secure templates decide what to cast. Anything with a plausible slot
+-- number in it is one, whoever wrote it.
+--
+-- Reading an attribute off a secure frame is allowed, in and out of combat. Setting
+-- one is not, and nothing here sets anything.
+--------------------------------------------------------------------------------
+
+-- Only used to attribute buttons to whoever made them, for the report. A button is
+-- included whether or not its name matches anything here.
+local BAR_OWNERS = {
+    { pattern = "^ActionButton",              owner = "Blizzard" },
+    { pattern = "^MultiBar",                  owner = "Blizzard" },
+    { pattern = "^OverrideActionBarButton",   owner = "Blizzard" },
+    { pattern = "^PetActionButton",           owner = "Blizzard (pet)" },
+    { pattern = "^StanceButton",              owner = "Blizzard (stance)" },
+    { pattern = "^BT4Button",                 owner = "Bartender4" },
+    { pattern = "^DominosActionButton",       owner = "Dominos" },
+    { pattern = "^ElvUI_Bar",                 owner = "ElvUI" },
+    { pattern = "^Ellesmere",                 owner = "EllesmereUI" },
+    -- EllesmereUI's action bars are named EABButton, not Ellesmere-anything. Found
+    -- by the fallback rule rather than guessed, which is the point of having one.
+    { pattern = "^EABButton",                 owner = "EllesmereUI" },
+    { pattern = "^NDui_",                     owner = "NDui" },
+    { pattern = "^SUFButton",                 owner = "SUF" },
+}
+
+local function OwnerOf(name)
+    if not name then return "unnamed" end
+    for _, entry in ipairs(BAR_OWNERS) do
+        if name:find(entry.pattern) then return entry.owner end
+    end
+    -- The name up to the first digit is a decent guess at an addon's prefix, and a
+    -- far better report than "unknown" when somebody is running a bar addon nobody
+    -- here has heard of.
+    return (name:match("^([%a_]+)") or name)
+end
+
+-- Every action button on screen, whoever owns it.
+--
+-- EnumerateFrames walks every frame the client has, which is thousands - fine for a
+-- diagnostic and for a one-off scan when settings change, and not something to do on
+-- a timer.
+-- The fast path, and for most people the only one that ever runs.
+--
+-- A lot of bar addons name their buttons after the ACTION SLOT they hold, which
+-- means a button can be looked up directly instead of hunted for:
+--
+--     EllesmereUI   _G["EABButton"  .. slot]
+--     Bartender4    _G["BT4Button"  .. slot]
+--
+-- 180 slots against a handful of prefixes is a few hundred global lookups, which is
+-- instant. The frame walk below is thousands of times more expensive and exists only
+-- for bars that do not name themselves usefully.
+--
+-- Every hit is VERIFIED by reading the button's own action attribute back, so a
+-- coincidental name match cannot put the wrong button in the map.
+local SLOT_NAMED = { "EABButton", "BT4Button", "DominosActionButton" }
+
+-- Blizzard's own bars, which are named by position within a bar rather than by slot.
+-- Fixed ranges, so the arithmetic is exact.
+local BLIZZ_BARS = {
+    { prefix = "ActionButton",                first = 1   },
+    { prefix = "MultiBarBottomLeftButton",    first = 61  },
+    { prefix = "MultiBarBottomRightButton",   first = 49  },
+    { prefix = "MultiBarRightButton",         first = 25  },
+    { prefix = "MultiBarLeftButton",          first = 37  },
+    { prefix = "MultiBar5Button",             first = 145 },
+    { prefix = "MultiBar6Button",             first = 157 },
+    { prefix = "MultiBar7Button",             first = 169 },
+}
+
+local function ByName()
+    local found = {}
+    local function take(frame, slot)
+        if not frame or not frame.GetAttribute then return end
+        -- Verified rather than trusted: the name says which slot it SHOULD hold and
+        -- the attribute says which one it does.
+        if tonumber(frame:GetAttribute("action")) ~= slot then return end
+        local name = frame.GetName and frame:GetName() or nil
+        found[#found + 1] = { frame = frame, slot = slot, name = name,
+                              owner = OwnerOf(name) }
+    end
+
+    for _, prefix in ipairs(SLOT_NAMED) do
+        for slot = 1, 180 do take(_G[prefix .. slot], slot) end
+    end
+    for _, bar in ipairs(BLIZZ_BARS) do
+        for i = 1, 12 do take(_G[bar.prefix .. i], bar.first + i - 1) end
+    end
+    return found
+end
+
+local scanCache, scanCacheAt, scanning = nil, 0, false
+
+-- Walks the frame list in SLICES, across several frames of gameplay.
+--
+-- Doing it in one pass trips the client's "script ran too long" watchdog on a real
+-- UI - twice, once with pcall per frame and again without it. The cost is the walk
+-- itself: a heavily-addoned client has tens of thousands of frames, and there is no
+-- amount of tightening the inner loop that makes that fit in a single frame.
+--
+-- So it yields. A few thousand frames per tick, finishing in well under a second,
+-- and the result is handed to a callback rather than returned - which is why every
+-- caller takes one.
+-- Smaller than it was. A slice of 2500 on a zero-interval ticker runs every frame,
+-- and during login - when every addon is creating its frames at once - that was
+-- enough to drop the frame rate through the floor. This finishes in a few hundred
+-- milliseconds instead of a few dozen, and nobody is looking at an action bar during
+-- the loading screen anyway.
+local SLICE = 500
+local waiting = {}
+
+function CDP.ScanActionButtonsAsync(onDone, force)
+    if not force and scanCache and (GetTime() - scanCacheAt) < 30 then
+        onDone(scanCache)
+        return
+    end
+
+    -- Named lookup first. If it finds anything at all, that is the answer and no
+    -- frame walk happens - which is the difference between instant and a visible
+    -- stall on a heavily-addoned client.
+    local named = ByName()
+    if #named > 0 then
+        scanCache, scanCacheAt = named, GetTime()
+        onDone(named)
+        return
+    end
+
+    -- A request arriving mid-walk is QUEUED, never dropped.
+    --
+    -- It used to return here without calling back, which looks like throttling and
+    -- is actually a deadlock: the caller had already set a "rebuilding" flag that
+    -- only its callback clears, so one overlapping request left the button map empty
+    -- for the rest of the session. Every ability then reported as not being on a bar
+    -- while sitting in plain sight on one.
+    waiting[#waiting + 1] = onDone
+    if scanning then return end
+    scanning = true
+
+    local found = {}
+    local frame = EnumerateFrames()
+    local ticker
+    ticker = C_Timer.NewTicker(0, function()
+        local budget = SLICE
+        while frame and budget > 0 do
+            local getAttr = frame.GetAttribute
+            if getAttr then
+                local slot = tonumber(getAttr(frame, "action"))
+                if slot and slot >= 1 and slot <= 180 then
+                    local name = frame.GetName and frame:GetName() or nil
+                    found[#found + 1] = { frame = frame, slot = slot, name = name,
+                                          owner = OwnerOf(name) }
+                end
+            end
+            frame = EnumerateFrames(frame)
+            budget = budget - 1
+        end
+        if not frame then
+            ticker:Cancel()
+            scanCache, scanCacheAt, scanning = found, GetTime(), false
+            -- Everyone who asked while this was running, in one go. The list is
+            -- emptied FIRST so a callback that starts another scan cannot be handed
+            -- its own request back.
+            local due = waiting
+            waiting = {}
+            for _, fn in ipairs(due) do fn(found) end
+        end
+    end)
+end
+
+-- The cached result, or nil if the walk has not finished yet. Nothing may force a
+-- synchronous scan: that is what kept timing out.
+function CDP.ScanActionButtons()
+    return scanCache
+end
+
+
+-- Which of those buttons currently hold a spell, and which spell. This is the half
+-- that decides whether a watched ability can be matched to a button at all.
+-- `spellSlots` and `itemSlots` are keyed the same way the watch list identifies
+-- things, so a matched ability is a single lookup. Items matter as much as spells
+-- here: a trinket on a bar is exactly the kind of cooldown this addon exists for.
+function CDP.ActionButtonReport(onDone, force)
+    CDP.ScanActionButtonsAsync(function(buttons)
+    local byOwner, withSpell, unreadable = {}, 0, 0
+    local spellSlots, itemSlots = {}, {}
+
+    for _, b in ipairs(buttons) do
+        byOwner[b.owner] = (byOwner[b.owner] or 0) + 1
+        local ok, actionType, id = pcall(GetActionInfo, b.slot)
+        if not ok then
+            unreadable = unreadable + 1
+        elseif actionType == "spell" and id then
+            withSpell = withSpell + 1
+            spellSlots[id] = spellSlots[id] or {}
+            table.insert(spellSlots[id], b)
+        elseif actionType == "item" and id then
+            -- Trinkets and potions. Exactly the kind of cooldown this addon is for,
+            -- so they are matched the same way rather than treated as an oddity.
+            withSpell = withSpell + 1
+            itemSlots[id] = itemSlots[id] or {}
+            table.insert(itemSlots[id], b)
+        elseif actionType == "macro" and id then
+            -- A macro's spell is whatever it would cast right now, which is the thing
+            -- a glow would need to follow. Recorded separately because it can change
+            -- without the button itself changing - a modifier or a stance is enough.
+            local okM, macroSpell = pcall(GetMacroSpell, id)
+            if okM and macroSpell then
+                withSpell = withSpell + 1
+                spellSlots[macroSpell] = spellSlots[macroSpell] or {}
+                table.insert(spellSlots[macroSpell], b)
+            end
+        end
+    end
+
+    onDone(buttons, byOwner, withSpell, unreadable, spellSlots, itemSlots)
+    end, force)
+end
+--------------------------------------------------------------------------------
 -- Diagnostics
 --------------------------------------------------------------------------------
 
@@ -1105,6 +1371,47 @@ function CDP.Diagnostics()
         print("  |cffff8080not yet timed:|r " .. table.concat(unknown, ", "))
         print("  |cff888888they pulse on time; the early notice starts after one run|r")
     end
+
+    -- Groundwork for glowing the real action button when a cooldown comes back.
+    -- Nothing uses this yet; it reports whether the buttons can be FOUND, which is
+    -- the question that decides whether the feature is straightforward or fiddly.
+    -- Plenty of people replace their bars entirely, and a version of this that only
+    -- works on Blizzard's own is not worth shipping.
+    -- Arrives a moment later than the rest, because the frame walk is spread over
+    -- several frames rather than done in one go. Said out loud so the gap does not
+    -- read as nothing having happened.
+    print("  |cff888888scanning action bars...|r")
+    CDP.ActionButtonReport(function(buttons, byOwner, withSpell, unreadable,
+                                    spellSlots, itemSlots)
+    print(string.format("  action buttons found: %d", #buttons))
+    if #buttons > 0 then
+        local parts = {}
+        for owner, n in pairs(byOwner) do parts[#parts + 1] = owner .. " " .. n end
+        table.sort(parts)
+        print("    " .. table.concat(parts, ", "))
+        print(string.format("    %d hold a spell%s", withSpell,
+            unreadable > 0 and (", " .. unreadable .. " unreadable") or ""))
+
+        -- The half that actually matters: can a WATCHED ability be matched to a
+        -- button? Everything else is academic if the answer is no.
+        local matched, missing = {}, {}
+        for _, entry in ipairs(CDP.watch) do
+            local pool = (entry.kind == "item") and itemSlots or spellSlots
+            if entry.id and pool[entry.id] then
+                matched[#matched + 1] = entry.name
+            elseif entry.id then
+                missing[#missing + 1] = entry.name
+            end
+        end
+        print(string.format("    %d of %d watched abilities are on a bar",
+            #matched, #matched + #missing))
+        if #missing > 0 then
+            print("    |cff888888not on a bar: " .. table.concat(missing, ", ") .. "|r")
+        end
+    else
+        print("    |cffff8080none - the scan found nothing carrying an action attribute|r")
+    end
+    end)
 end
 
 -- Answers "why is this pulsing / why is this not pulsing" for one ability.
@@ -1290,6 +1597,8 @@ local function Usage()
     print("  |cffffd479/ncp unlock|lock|r - move the icon anchor")
     print("  |cffffd479/ncp test|r - show a test pulse")
     print("  |cffffd479/ncp debug|r - log every pulse and every suppressed pulse")
+    print("  |cffffd479/ncp glow on|off|r - glow the real action button when a cooldown returns")
+    print("  |cffffd479/ncp glow|r - fire it on everything now, to see it")
     print("  |cffffd479/ncp diag|r - report what the client lets the addon see")
     print("  |cffffd479/ncp find <name>|r - why an ability is or is not being tracked")
     print("  |cffffd479/ncp priority|r - order the icons when several land together")
@@ -1330,6 +1639,22 @@ SlashCmdList["NUGSCOOLDOWNPULSE"] = function(msg)
 
     elseif cmd == "diag" then
         CDP.Diagnostics()
+
+    -- `/ncp glow` fires the glow on every watched ability at once, so it can be
+    -- positioned and coloured without waiting for a real cooldown. `on`/`off` exist
+    -- because the settings tab does not, and reaching into the saved variables by
+    -- hand is a trap - this addon's table is CooldownPulseDB rather than the name
+    -- its folder would suggest, kept from before the rename so nobody's profile was
+    -- thrown away.
+    elseif cmd == "glow" then
+        local arg = (rest or ""):lower()
+        if arg == "on" or arg == "off" then
+            CDP.db.actionGlow = (arg == "on")
+            CDP.Print("action bar glow " .. arg .. ".")
+            if CDP.db.actionGlow and CDP.Glow then CDP.Glow.Rebuild() end
+        elseif CDP.Glow then
+            CDP.Glow.Test()
+        end
 
     elseif cmd == "find" or cmd == "why" then
         CDP.Explain(rest)

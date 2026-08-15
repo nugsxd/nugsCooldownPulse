@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.21.4
+
+**New: glow the real action bar button when a cooldown comes back.**
+
+The pulse answers "something is ready" in one place you chose. This answers it where
+your eyes already are - on the button you are about to press. Both come off the same
+signal, so an ability cannot glow without pulsing or pulse without glowing.
+
+- **It finds the button wherever it is.** Blizzard bars, Bartender, Dominos,
+  ElvUI, a full UI replacement - buttons are identified by what they hold rather
+  than by guessing frame names, so a bar addon nobody has heard of works too.
+- **Move the ability and the glow follows.** Nothing to configure per button and
+  nothing to redo when you rearrange a bar or change spec.
+- Every button holding the ability glows, not just the first - the same spell on two
+  bars glowing on only one reads as broken.
+- **A colour and a duration per ability**, on a new Glow tab. Set the mode to "one
+  per ability" and only the ones you give a colour to will glow - the same whitelist
+  idea as the sound cues, and for the same reason: a bar where everything glows
+  flickers constantly and stops meaning anything. The useful setup is the three or
+  four that actually matter.
+- Off by default. It draws on frames this addon does not own, which should be a
+  choice rather than something that appears after an update.
+
+**The Sound and Glow settings moved onto their own tabs**, at the top of the page
+they belong to. The sidebar had grown to hold the icon, the layout, the fonts,
+Masque, the sound and the glow - a scrolling column of unrelated things, two
+sections of which only applied to a tab you might not have been looking at.
+
+- Colours are picked from a list rather than cycled through. Six of them is already
+  too many to step past when you are trying to compare two, and cycling never showed
+  you what was on offer before you committed.
+
+The glow is drawn by this addon rather than borrowed from Blizzard's proc alert, so
+"your cooldown is back" never looks identical to "this just procced".
+
 ## 0.19.4
 
 - Grouped under a **nugsAddons** category in the game's AddOns list, so the whole

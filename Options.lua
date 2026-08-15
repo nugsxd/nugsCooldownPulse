@@ -830,6 +830,106 @@ end
 
 local soundPopup
 
+local GLOW_PRESETS = {
+    { name = "Storm blue", c = { 0.35, 0.72, 1.00, 1 } },
+    { name = "Green",      c = { 0.35, 1.00, 0.45, 1 } },
+    { name = "Gold",       c = { 1.00, 0.82, 0.25, 1 } },
+    { name = "White",      c = { 1.00, 1.00, 1.00, 1 } },
+    { name = "Red",        c = { 1.00, 0.35, 0.35, 1 } },
+    { name = "Purple",     c = { 0.78, 0.45, 1.00, 1 } },
+}
+
+-- A dropdown, not a cycle. Six colours is already too many to step through when you
+-- are trying to compare two of them, and cycling gives no way to see what is on
+-- offer before committing. Same popup shape as the sound picker below, and every
+-- entry is written in the colour it sets.
+local glowPopup
+
+local function ToggleGlowPicker(anchorTo, includeNone, onPick)
+    if glowPopup and glowPopup:IsShown() then
+        glowPopup:Hide()
+        return
+    end
+    if not glowPopup then
+        glowPopup = CreateFrame("Frame", nil, UIParent)
+        glowPopup:SetSize(170, 190)
+        glowPopup:SetFrameStrata("FULLSCREEN_DIALOG")
+        -- Toplevel and clamped for the same reason as the sound picker: this opens
+        -- from rows near the bottom of a scrolling list.
+        glowPopup:SetToplevel(true)
+        glowPopup:SetClampedToScreen(true)
+        glowPopup:EnableMouse(true)
+        PopupChrome(glowPopup)
+        glowPopup.scroll = ScrollArea(glowPopup)
+        glowPopup.scroll:SetPoint("TOPLEFT", 5, -5)
+        glowPopup.scroll:SetPoint("BOTTOMRIGHT", -5, 5)
+        glowPopup.rows = {}
+        AttachPopupBehaviour(glowPopup, true)
+    end
+
+    local entries = {}
+    if includeNone then entries[#entries + 1] = { none = true, name = "|cff777777No glow|r" } end
+    for _, p in ipairs(GLOW_PRESETS) do entries[#entries + 1] = p end
+
+    local content = glowPopup.scroll.content
+    content:SetWidth(glowPopup:GetWidth() - 10)
+
+    for index, entry in ipairs(entries) do
+        local row = glowPopup.rows[index]
+        if not row then
+            row = CreateFrame("Button", nil, content)
+            row:SetHeight(22)
+            row:SetPoint("TOPLEFT", 0, -(index - 1) * 22)
+            row:SetPoint("TOPRIGHT", 0, -(index - 1) * 22)
+            row.stripe = row:CreateTexture(nil, "BACKGROUND")
+            row.stripe:SetAllPoints()
+            row.stripe:SetColorTexture(1, 1, 1, 0)
+            row.swatch = row:CreateTexture(nil, "ARTWORK")
+            row.swatch:SetSize(12, 12)
+            row.swatch:SetPoint("LEFT", 6, 0)
+            row.label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            row.label:SetPoint("LEFT", row.swatch, "RIGHT", 6, 0)
+            row.label:SetPoint("RIGHT", -6, 0)
+            row.label:SetJustifyH("LEFT")
+            row:SetScript("OnEnter", function(self) self.stripe:SetColorTexture(unpack(C.rowB)) end)
+            row:SetScript("OnLeave", function(self) self.stripe:SetColorTexture(1, 1, 1, 0) end)
+            glowPopup.rows[index] = row
+        end
+
+        if entry.none then
+            row.swatch:Hide()
+            row.label:SetText(entry.name)
+        else
+            row.swatch:Show()
+            row.swatch:SetColorTexture(entry.c[1], entry.c[2], entry.c[3], 1)
+            row.label:SetText(string.format("|cff%02x%02x%02x%s|r",
+                entry.c[1] * 255, entry.c[2] * 255, entry.c[3] * 255, entry.name))
+        end
+        row:SetScript("OnClick", function()
+            -- Copied, never referenced: handing the preset table itself to saved
+            -- variables would mean a later edit rewrote the preset everywhere.
+            onPick(entry.none and nil or { unpack(entry.c) })
+            glowPopup:Hide()
+        end)
+        row:Show()
+    end
+    for i = #entries + 1, #glowPopup.rows do glowPopup.rows[i]:Hide() end
+    content:SetHeight(math.max(1, #entries * 22))
+    glowPopup.scroll:SetVerticalScroll(0)
+    glowPopup.scroll:UpdateBar()
+    -- Drops down if there is room and opens upwards if there is not, matching the
+    -- sound picker. Clamping alone would slide the list over the button that opened
+    -- it, hiding the thing being changed.
+    glowPopup:ClearAllPoints()
+    local below = (anchorTo:GetBottom() or 0) - glowPopup:GetHeight()
+    if below < 20 then
+        glowPopup:SetPoint("BOTTOMLEFT", anchorTo, "TOPLEFT", 0, 2)
+    else
+        glowPopup:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, -2)
+    end
+    glowPopup:Show()
+end
+
 local function ToggleSoundPicker(parent, anchorTo, includeNone, onPick)
     if soundPopup and soundPopup:IsShown() then
         soundPopup:Hide()
@@ -1132,11 +1232,37 @@ end
 --------------------------------------------------------------------------------
 local rows = {}
 
+--------------------------------------------------------------------------------
+-- Per-ability glow
+--
+-- Cycled rather than picked from a wheel. A glow has to be recognisable in
+-- peripheral vision while you are doing something else, which is a job for a few
+-- strong, distinct colours - and cycling matches the layout and outline controls
+-- this window already uses.
+--------------------------------------------------------------------------------
+
+
+local HOLDS = { 0.5, 0.8, 1.2, 2.0, 3.0 }
+
+local function GlowColorName(c)
+    for _, p in ipairs(GLOW_PRESETS) do
+        if p.c[1] == c[1] and p.c[2] == c[2] and p.c[3] == c[3] then return p.name end
+    end
+    return "custom"
+end
+
+local function NextHold(current)
+    for i, h in ipairs(HOLDS) do
+        if math.abs(h - current) < 0.01 then return HOLDS[(i % #HOLDS) + 1] end
+    end
+    return HOLDS[1]
+end
+
 local function FilteredEntries()
     local filter = (searchBox and searchBox:GetText() or ""):lower()
     -- The Sounds pane only lists abilities that are actually tracked. Offering a cue
     -- for something that never pulses is a setting that can only disappoint.
-    local trackedOnly = (paneMode == "sounds")
+    local trackedOnly = (paneMode == "sounds" or paneMode == "glow")
     local out, lastGroup = {}, nil
     for _, entry in ipairs(CDP.catalog) do
         if (not trackedOnly or CDP.IsEnabled(entry))
@@ -1196,6 +1322,16 @@ local function AcquireRow(index, parent)
     row.play:SetPoint("RIGHT", row.sound, "LEFT", -4, 0)
     row.play:Hide()
 
+    -- Glow pane. Same reasoning as the sound controls above: one row type, so
+    -- search, scrolling and the pool keep working unchanged.
+    row.glow = Button(row, "", 110, 18, nil)
+    row.glow:SetPoint("RIGHT", -6, 0)
+    row.glow:Hide()
+
+    row.glowHold = Button(row, "", 54, 18, nil)
+    row.glowHold:SetPoint("RIGHT", row.glow, "LEFT", -4, 0)
+    row.glowHold:Hide()
+
     row:SetScript("OnClick", function(self)
         if not self.entry then return end
         -- In the Sounds pane the row is not a checkbox; the buttons on it do the work.
@@ -1229,6 +1365,8 @@ local function RefreshList()
             row.icon:Hide()
             row.sound:Hide()
             row.play:Hide()
+            row.glow:Hide()
+            row.glowHold:Hide()
             row.cd:SetText("")
             row.name:SetText(item.header)
             row.name:SetTextColor(unpack(C.accent))
@@ -1267,14 +1405,62 @@ local function RefreshList()
                         RefreshList()
                     end)
                 end)
+                row.glow:Hide()
+                row.glowHold:Hide()
                 row.play:SetShown(assigned ~= nil)
                 row.play:SetScript("OnClick", function()
                     if assigned then CDP.PlayCue(assigned) end
+                end)
+            elseif paneMode == "glow" then
+                -- Same layout as the Sounds pane: no checkbox, because everything
+                -- listed is already tracked.
+                row.box:Hide()
+                row.sound:Hide()
+                row.play:Hide()
+                row.cd:SetText("")
+                row.icon:ClearAllPoints()
+                row.icon:SetPoint("LEFT", 6, 0)
+                row.name:ClearAllPoints()
+                row.name:SetPoint("LEFT", row.icon, "RIGHT", 6, 0)
+                row.name:SetPoint("RIGHT", row.glowHold, "LEFT", -6, 0)
+                row.name:SetTextColor(0.95, 0.95, 0.95)
+
+                local per = CDP.char.glows[entry.key]
+                row.glow:Show()
+                row.glowHold:SetShown(per ~= nil)
+
+                -- The button is written IN the colour it sets, so the list reads as
+                -- what it will look like rather than as a column of colour names.
+                if per then
+                    local c = per.color
+                    row.glow:SetLabel(string.format("|cff%02x%02x%02x%s|r",
+                        c[1] * 255, c[2] * 255, c[3] * 255, GlowColorName(c)))
+                else
+                    row.glow:SetLabel("|cff777777no glow|r")
+                end
+                row.glow:SetScript("OnClick", function(self)
+                    ToggleGlowPicker(self, true, function(color)
+                        CDP.char.glows[entry.key] = color
+                            and { color = color, hold = per and per.hold or CDP.db.glowHold }
+                            or nil
+                        if CDP.Glow then CDP.Glow.Preview(entry) end
+                        CDP.RefreshOptions()
+                    end)
+                end)
+
+                row.glowHold:SetLabel(per and string.format("%.1fs", per.hold or CDP.db.glowHold) or "")
+                row.glowHold:SetScript("OnClick", function()
+                    if not per then return end
+                    per.hold = NextHold(per.hold or CDP.db.glowHold)
+                    if CDP.Glow then CDP.Glow.Preview(entry) end
+                    CDP.RefreshOptions()
                 end)
             else
                 row.box:Show()
                 row.sound:Hide()
                 row.play:Hide()
+                row.glow:Hide()
+                row.glowHold:Hide()
                 row.icon:ClearAllPoints()
                 row.icon:SetPoint("LEFT", row.box, "RIGHT", 6, 0)
                 row.name:ClearAllPoints()
@@ -1682,82 +1868,6 @@ local function BuildWindow()
                           and "Masque found - enable, then /reload."
                           or "Masque is not installed.")
 
-    gap(6)
-    local h3 = SectionHeader(left, "Sound")
-    h3:SetPoint("TOPLEFT", 0, -y); y = y + 20
-
-    place(Check(left, "Play a sound cue",
-        function() return db.soundEnabled end,
-        function(v) db.soundEnabled = v end), ROW_H)
-
-    -- One cue for everything, or a cue per ability. Cycling button to match the
-    -- layout and grow controls above.
-    local modeSoundRow = CreateFrame("Frame", nil, left)
-    modeSoundRow:SetHeight(22)
-    local soundModeBtn = Button(modeSoundRow, "", LEFT_W - 16, 22, function()
-        db.soundMode = (db.soundMode == "per") and "one" or "per"
-        db.soundEnabled = true
-        CDP.RefreshOptions()
-        RefreshList()          -- the right pane changes shape with the mode
-    end)
-    soundModeBtn:SetPoint("LEFT", 0, 0)
-    modeSoundRow.Refresh = function()
-        soundModeBtn:SetLabel(db.soundMode == "per"
-            and "Cue: one per ability" or "Cue: one for everything")
-    end
-    widgets[#widgets + 1] = modeSoundRow
-    place(modeSoundRow, 26)
-
-    local soundRow = CreateFrame("Frame", nil, left)
-    soundRow:SetHeight(22)
-    -- Declared before it is assigned, deliberately. `local x = f(function() ... x ... end)`
-    -- does NOT capture x: a local's scope starts after the statement that declares it,
-    -- so the closure binds to a global of the same name and gets nil. Anchoring the
-    -- popup to that nil is what threw.
-    local soundBtn
-    soundBtn = Button(soundRow, "", LEFT_W - 46, 22, function()
-        ToggleSoundPicker(left, soundBtn, false, function(key)
-            db.soundKey = key
-            db.soundEnabled = true
-            CDP.RefreshOptions()
-        end)
-    end)
-    soundBtn:SetPoint("LEFT", 0, 0)
-    local playBtn = Button(soundRow, "|cff8cd2ff>|r", 26, 22,
-        function() CDP.PlayCue(db.soundKey) end)
-    playBtn:SetPoint("LEFT", soundBtn, "RIGHT", 4, 0)
-    soundRow.Refresh = function()
-        soundBtn:SetLabel(CDP.SoundByKey(db.soundKey).name)
-        -- In per-ability mode this cue is not used by anything, so say so rather
-        -- than leave a live-looking control that does nothing.
-        soundBtn:SetGrey(db.soundMode == "per")
-        playBtn:SetGrey(db.soundMode == "per")
-    end
-    widgets[#widgets + 1] = soundRow
-    place(soundRow, 26)
-
-    local perHint = Label(left,
-        "Assign cues in the |cff8cd2ffSounds|r pane on the right. Anything without one "
-        .. "pulses silently.", "GameFontDisableSmall", C.faint)
-    perHint:SetPoint("TOPLEFT", 0, -y)
-    perHint:SetWidth(LEFT_W - 16)
-    perHint:SetJustifyH("LEFT")
-    perHint.Refresh = function() perHint:SetShown(db.soundMode == "per") end
-    widgets[#widgets + 1] = perHint
-    y = y + 28
-
-    -- No custom-file box. See CDP.SoundList in Core.lua for why: it asked people to
-    -- type an exact path to a file they had to install by hand, and a LibSharedMedia
-    -- sound pack does the same job by just being installed. `/ncp sound file` is
-    -- still there for anyone who wants it.
-    local mediaHint = Label(left,
-        "Install a LibSharedMedia sound pack and its cues appear in the list above.",
-        "GameFontDisableSmall", C.faint)
-    mediaHint:SetPoint("TOPLEFT", 0, -y)
-    mediaHint:SetWidth(LEFT_W - 16)
-    mediaHint:SetJustifyH("LEFT")
-    y = y + 28
-
     left:SetHeight(y + 10)
     leftScroll:UpdateBar()
 
@@ -1770,7 +1880,7 @@ local function BuildWindow()
     --
     -- Same shape as the tab strips in nugsCastBars and nugsComboBar: a text label
     -- with a storm-blue underline on the active one, no backdrop.
-    local abilitiesTab, soundsTab
+    local abilitiesTab, soundsTab, glowTab
 
     -- Only records which face is showing. The look of the tabs and which controls
     -- belong to them is decided in one place, RefreshPaneChrome, so the two can never
@@ -1809,6 +1919,8 @@ local function BuildWindow()
     abilitiesTab:SetPoint("TOPLEFT", rightX, -42)
     soundsTab = MakeTab("Sounds", 60, function() SetPane("sounds") end)
     soundsTab:SetPoint("LEFT", abilitiesTab, "RIGHT", 10, 0)
+    glowTab = MakeTab("Glow", 46, function() SetPane("glow") end)
+    glowTab:SetPoint("LEFT", soundsTab, "RIGHT", 10, 0)
 
     -- Hairline under the whole strip so the two tabs read as a strip rather than as
     -- two loose words.
@@ -1862,20 +1974,213 @@ local function BuildWindow()
     soundHint:SetJustifyH("LEFT")
     soundHint:Hide()
 
+    -- Forward-declared: RefreshPaneChrome closes over all three and is defined
+    -- above them, so without this they would resolve to nil globals.
+    local listPanel, glowHeader, soundHeader
+
     local function RefreshPaneChrome()
         local abilities = (paneMode == "abilities")
         allBtn:SetShown(abilities)
         noneBtn:SetShown(abilities)
         autoBtn:SetShown(abilities)
-        local perOff = (not abilities) and CDP.db.soundMode ~= "per"
+        -- Each pane says when its own per-ability mode is switched off, rather than
+        -- listing controls that cannot do anything. The Sounds note was already
+        -- doing this; the Glow pane needs the same or its rows look broken.
+        local sounds = (paneMode == "sounds")
+        local glow   = (paneMode == "glow")
+        local perOff = (sounds and CDP.db.soundMode ~= "per")
+                    or (glow and (not CDP.db.actionGlow or CDP.db.glowMode ~= "per"))
+        -- One label, two panes, so its text is set rather than assumed.
+        if perOff then
+            soundNote:SetText(glow
+                and ((not CDP.db.actionGlow)
+                     and "|cffd8a13fAction bar glow is off.|r Switch it on under "
+                         .. "|cff8cd2ffAction bar glow|r on the left."
+                     or  "|cffd8a13fOne colour for everything.|r Set "
+                         .. "|cff8cd2ffGlow|r on the left to \"per ability\" to use this list.")
+                or "|cffd8a13fPer-ability cues are off.|r Set |cff8cd2ffCue|r on the left to "
+                   .. "\"one per ability\" for these to be used.")
+        end
         soundNote:SetShown(perOff)
-        soundHint:SetShown(not abilities and not perOff)
+        soundHint:SetShown(sounds and not perOff)
+
+        -- Each pane's own settings at the top, and EVERYTHING below them moved down
+        -- to make room. The search box sits at a fixed offset that was chosen when
+        -- the only thing above it was the tab strip, so without this the header
+        -- lands on top of it - which is exactly what it did.
+        glowHeader:SetShown(glow)
+        soundHeader:SetShown(sounds)
+
+        local hasHeader = glow or sounds
+        local searchY   = hasHeader and -134 or -78
+        local noteY     = searchY - 26
+        local listY     = perOff and (noteY - 30) or (searchY - 28)
+
+        searchBox:ClearAllPoints()
+        searchBox:SetPoint("TOPLEFT", rightX, searchY)
+        searchBox:SetPoint("TOPRIGHT", -12, searchY)
+
+        soundNote:ClearAllPoints()
+        soundNote:SetPoint("TOPLEFT", rightX, noteY)
+        soundNote:SetPoint("RIGHT", f, "RIGHT", -12, 0)
+        soundHint:ClearAllPoints()
+        soundHint:SetPoint("TOPLEFT", rightX, noteY)
+        soundHint:SetPoint("RIGHT", f, "RIGHT", -12, 0)
+
+        listPanel:ClearAllPoints()
+        listPanel:SetPoint("TOPLEFT", rightX, listY)
+        listPanel:SetPoint("BOTTOMRIGHT", -12, 44)
         if abilitiesTab then abilitiesTab:SetActive(abilities) end
-        if soundsTab then soundsTab:SetActive(not abilities) end
+        if soundsTab then soundsTab:SetActive(paneMode == "sounds") end
+        if glowTab then glowTab:SetActive(paneMode == "glow") end
     end
     CDP.RefreshPaneChrome = RefreshPaneChrome
 
-    local listPanel = Panel(f, { 0.05, 0.05, 0.05, 0.9 })
+    --------------------------------------------------------------------------
+    -- Pane headers
+    --
+    -- Each tab carries its own settings, at the top of its own page, instead of
+    -- everything living in the sidebar. The sidebar had grown to hold the icon,
+    -- the layout, the fonts, Masque, the sound AND the glow, which made it a
+    -- scrolling list of unrelated things while two of its sections only applied
+    -- to a tab you might not be looking at.
+    --
+    -- Laid out with explicit anchors rather than the sidebar's `place` helper,
+    -- because these are rows of controls across a wide pane, not a single column.
+    --------------------------------------------------------------------------
+    local HDR_TOP  = -70
+    local HDR_ROW2 = HDR_TOP - 28
+
+    ------------------------------------------------------------------ glow pane
+    glowHeader = CreateFrame("Frame", nil, f)
+    glowHeader:SetPoint("TOPLEFT", rightX, HDR_TOP)
+    glowHeader:SetPoint("RIGHT", f, "RIGHT", -12, 0)
+    glowHeader:SetHeight(62)
+    glowHeader:Hide()
+
+    local glowOn = Check(glowHeader, "Glow action buttons",
+        function() return db.actionGlow end,
+        function(v)
+            db.actionGlow = v
+            -- Switching it on is what builds the button map, so it happens here
+            -- rather than on the next bar change - otherwise the first cooldown
+            -- after enabling it would glow nothing.
+            if v and CDP.Glow then CDP.Glow.Rebuild(true) end
+        end)
+    glowOn:SetPoint("TOPLEFT", 0, 0)
+    widgets[#widgets + 1] = glowOn
+
+    local glowModeBtn = Button(glowHeader, "", 190, 22, function()
+        db.glowMode = (db.glowMode == "per") and "one" or "per"
+        db.actionGlow = true
+        if CDP.Glow then CDP.Glow.Rebuild(true) end
+        CDP.RefreshOptions()
+    end)
+    glowModeBtn:SetPoint("TOPRIGHT", 0, 0)
+    glowModeBtn:SetWidth(150)
+    glowModeBtn.Refresh = function()
+        glowModeBtn:SetLabel("Glow: " .. (db.glowMode == "per"
+            and "one per ability" or "one for everything"))
+        glowModeBtn:SetAlpha(db.actionGlow and 1 or 0.4)
+    end
+    widgets[#widgets + 1] = glowModeBtn
+
+    -- Only meaningful in "one for everything" - in per-ability mode the colour
+    -- comes off the row. Shown either way, greyed when the list owns it, so the
+    -- control does not vanish and reappear as the mode changes.
+    local glowColorBtn = Button(glowHeader, "", 150, 22, function()
+        local current, index = db.glowColor or GLOW_PRESETS[1].c, 1
+        for i, p in ipairs(GLOW_PRESETS) do
+            if p.c[1] == current[1] and p.c[2] == current[2] and p.c[3] == current[3] then
+                index = i break
+            end
+        end
+        db.glowColor = { unpack(GLOW_PRESETS[(index % #GLOW_PRESETS) + 1].c) }
+        CDP.RefreshOptions()
+    end)
+    glowColorBtn:SetPoint("TOPLEFT", 0, HDR_ROW2 - HDR_TOP)
+    glowColorBtn.Refresh = function()
+        local c = db.glowColor or GLOW_PRESETS[1].c
+        glowColorBtn:SetLabel(string.format("Colour: |cff%02x%02x%02x%s|r",
+            c[1] * 255, c[2] * 255, c[3] * 255, GlowColorName(c)))
+        glowColorBtn:SetAlpha(db.glowMode == "per" and 0.4 or 1)
+    end
+    widgets[#widgets + 1] = glowColorBtn
+
+    local glowTestBtn = Button(glowHeader, "Show me", 80, 22, function()
+        if CDP.Glow then CDP.Glow.Test() end
+    end)
+    glowTestBtn:SetPoint("TOPRIGHT", glowModeBtn, "TOPLEFT", -8, 0)
+    widgets[#widgets + 1] = glowTestBtn
+
+    local glowSpill = Slider(glowHeader, "Spill", 0, 24, 1,
+        function() return db.glowSize end,
+        function(v) db.glowSize = v end, "%d px")
+    glowSpill:SetPoint("TOPLEFT", glowColorBtn, "TOPRIGHT", 12, 4)
+    glowSpill:SetWidth(125)
+    widgets[#widgets + 1] = glowSpill
+
+    local glowLasts = Slider(glowHeader, "Lasts", 0.4, 3, 0.1,
+        function() return db.glowHold end,
+        function(v) db.glowHold = v end, "%.1fs")
+    glowLasts:SetPoint("TOPLEFT", glowSpill, "TOPRIGHT", 12, 0)
+    glowLasts:SetWidth(125)
+    glowLasts.Refresh = function()
+        -- Per-ability durations override this one, so it greys out with the colour.
+        glowLasts:SetAlpha(db.glowMode == "per" and 0.4 or 1)
+    end
+    widgets[#widgets + 1] = glowLasts
+
+    ----------------------------------------------------------------- sound pane
+    soundHeader = CreateFrame("Frame", nil, f)
+    soundHeader:SetPoint("TOPLEFT", rightX, HDR_TOP)
+    soundHeader:SetPoint("RIGHT", f, "RIGHT", -12, 0)
+    soundHeader:SetHeight(62)
+    soundHeader:Hide()
+
+    local soundOn = Check(soundHeader, "Play a sound cue",
+        function() return db.soundEnabled end,
+        function(v) db.soundEnabled = v end)
+    soundOn:SetPoint("TOPLEFT", 0, 0)
+    widgets[#widgets + 1] = soundOn
+
+    local soundModeBtn = Button(soundHeader, "", 190, 22, function()
+        db.soundMode = (db.soundMode == "per") and "one" or "per"
+        db.soundEnabled = true
+        CDP.RefreshOptions()
+    end)
+    soundModeBtn:SetPoint("TOPRIGHT", 0, 0)
+    soundModeBtn:SetWidth(150)
+    soundModeBtn.Refresh = function()
+        soundModeBtn:SetLabel("Cue: " .. (db.soundMode == "per"
+            and "one per ability" or "one for everything"))
+        soundModeBtn:SetAlpha(db.soundEnabled and 1 or 0.4)
+    end
+    widgets[#widgets + 1] = soundModeBtn
+
+    -- The single cue, for "one for everything". Greyed rather than hidden in
+    -- per-ability mode, for the same reason as the glow colour above.
+    local soundBtn = Button(soundHeader, "", 280, 22, function(self)
+        ToggleSoundPicker(f, self, false, function(key)
+            db.sound = key
+            CDP.PlayCue(key)
+            CDP.RefreshOptions()
+        end)
+    end)
+    soundBtn:SetPoint("TOPLEFT", 0, HDR_ROW2 - HDR_TOP)
+    soundBtn.Refresh = function()
+        soundBtn:SetLabel("Cue: " .. CDP.SoundByKey(db.sound).name)
+        soundBtn:SetAlpha((db.soundEnabled and db.soundMode ~= "per") and 1 or 0.4)
+    end
+    widgets[#widgets + 1] = soundBtn
+
+    local soundTestBtn = Button(soundHeader, "Play", 80, 22, function()
+        CDP.PlayCue(db.sound)
+    end)
+    soundTestBtn:SetPoint("TOPRIGHT", soundModeBtn, "TOPLEFT", -8, 0)
+    widgets[#widgets + 1] = soundTestBtn
+
+    listPanel = Panel(f, { 0.05, 0.05, 0.05, 0.9 })
     listPanel:SetPoint("TOPLEFT", rightX, -132)
     listPanel:SetPoint("BOTTOMRIGHT", -12, 44)
 
