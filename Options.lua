@@ -132,8 +132,15 @@ local function HeaderBar(f, titleText, tailText)
     header:SetHeight(30)
     header:EnableMouse(true)
     header:RegisterForDrag("LeftButton")
-    header:SetScript("OnDragStart", function() f:StartMoving() end)
-    header:SetScript("OnDragStop", function() f:StopMovingOrSizing() end)
+    -- Stops the move if this is hidden mid-drag: a hidden frame never gets
+    -- OnDragStop, and the move would stay live and stick to the cursor.
+    f:HookScript("OnHide", function(s) pcall(s.StopMovingOrSizing, s) end)
+
+    -- Dragging, and the guarantee that a move ends: from the shared nugsMove.lua,
+    -- which asserts that a frame nobody is holding is not moving rather than closing
+    -- one more route by which a move could be left running. Read the note at the top
+    -- of that file before changing anything here.
+    CDP.InstallMove(f, { label = "the settings window", handle = header, body = true })
 
     local accent = header:CreateTexture(nil, "OVERLAY")
     accent:SetPoint("BOTTOMLEFT", 0, 0)
@@ -1179,9 +1186,6 @@ local function BuildPriorityWindow()
     f:SetMovable(true)
     f:EnableMouse(true)
     f:SetClampedToScreen(true)
-    f:RegisterForDrag("LeftButton")
-    f:SetScript("OnDragStart", f.StartMoving)
-    f:SetScript("OnDragStop", f.StopMovingOrSizing)
     Backdrop(f, C.bg, 1)
     tinsert(UISpecialFrames, "nugsCooldownPulsePriority")
     priorityWindow = f
@@ -1514,9 +1518,6 @@ local function BuildWindow()
     f:SetMovable(true)
     f:EnableMouse(true)
     f:SetClampedToScreen(true)
-    f:RegisterForDrag("LeftButton")
-    f:SetScript("OnDragStart", f.StartMoving)
-    f:SetScript("OnDragStop", f.StopMovingOrSizing)
     Backdrop(f, C.bg, 1)
     tinsert(UISpecialFrames, "nugsCooldownPulseOptions")   -- Escape closes it
     window = f
@@ -1622,7 +1623,7 @@ local function BuildWindow()
     local saveBtn = Button(profileRow, "Save", 62, 22, function()
         local name = CDP.TrimName(profileName:GetText())
         if name == "" then CDP.Print("give the profile a name first.") return end
-        local existed = CDP.db.profiles[name] ~= nil
+        local existed = CDP.Profile.account.profiles[name] ~= nil
         if CDP.SaveProfile(name) then
             CDP.Print((existed and "profile updated: " or "profile saved: ") .. name)
             CDP.RefreshOptions()
@@ -2211,7 +2212,11 @@ local function BuildWindow()
     hint:SetPoint("BOTTOMRIGHT", -12, 18)
 
     f:SetScript("OnShow", function() CDP.RefreshOptions() end)
-    f:SetScript("OnHide", function()
+    -- HookScript, NOT SetScript: this window already has an OnHide handler set
+    -- further up (the guard that stops a drag left running when the window is
+    -- hidden mid-move). SetScript would throw it away silently. Checked by
+    -- dragcheck.js HOOKKILL.
+    f:HookScript("OnHide", function()
         if fontPopup then fontPopup:Hide() end
     end)
 
@@ -2271,9 +2276,11 @@ local function BuildMoveBar()
     f:SetClampedToScreen(true)
     f:SetMovable(true)
     f:EnableMouse(true)
-    f:RegisterForDrag("LeftButton")
-    f:SetScript("OnDragStart", f.StartMoving)
-    f:SetScript("OnDragStop", f.StopMovingOrSizing)
+    -- Dragging, from the shared nugsMove.lua. This bar is the likeliest frame in
+    -- the addon to be hidden mid-move: the settings window hides it the instant it
+    -- opens, and a frame hidden between StartMoving and StopMovingOrSizing is never
+    -- given OnDragStop.
+    CDP.InstallMove(f, { label = "the move bar" })
     -- PopupChrome draws its own backdrop plus the storm-blue edge, so it is the whole
     -- treatment - calling Backdrop as well would layer a second one underneath.
     PopupChrome(f)

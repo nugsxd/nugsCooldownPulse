@@ -512,17 +512,13 @@ local function CopyDefaults(dst, src)
     return dst
 end
 
-local function InitDB()
-    CooldownPulseDB     = CopyDefaults(CooldownPulseDB     or {}, CDP.defaults)
-    CooldownPulseCharDB = CopyDefaults(CooldownPulseCharDB or {}, CDP.charDefaults)
-    CDP.db   = CooldownPulseDB
-    CDP.char = CooldownPulseCharDB
-    CooldownPulseDB.profiles = CooldownPulseDB.profiles or {}
-
+-- One-time repairs and top-ups. Run at login and again whenever a profile is copied
+-- in, because settings arriving by copy have had the same chance to be stale.
+local function NormaliseSettings()
     -- The old single custom file becomes the first entry in the library, keeping the
     -- cue anyone had set. `soundFile` is left in place rather than cleared: a player
     -- who downgrades should get their sound back, not silence.
-    local db = CooldownPulseDB
+    local db = CDP.db
     if db.soundFile and db.soundFile ~= "" and not db.customSoundsMigrated then
         db.customSoundsMigrated = true
         db.customSounds = db.customSounds or {}
@@ -536,6 +532,29 @@ local function InitDB()
         end
         if db.soundKey == "custom" then db.soundKey = "file:Custom file" end
     end
+end
+
+local function InitDB()
+    -- Settings are per character. See nugsProfile.lua for why nothing is linked.
+    CDP.db = CDP.Profile:Init({
+        global   = "CooldownPulseDB",
+        defaults = CDP.defaults,
+        onApply  = function()
+            NormaliseSettings()
+            if CDP.RebuildCatalog then CDP.RebuildCatalog() end
+            if CDP.RefreshOptions then CDP.RefreshOptions() end
+        end,
+    })
+
+    CooldownPulseCharDB = CopyDefaults(CooldownPulseCharDB or {}, CDP.charDefaults)
+    CDP.char = CooldownPulseCharDB
+
+    NormaliseSettings()
+
+    -- The named-profile store stays ACCOUNT-wide: saving a look on one character and
+    -- loading it on another is the only reason it exists.
+    local account = CDP.Profile.account
+    account.profiles = account.profiles or {}
 end
 
 --------------------------------------------------------------------------------
@@ -577,7 +596,7 @@ CDP.TrimName = Trim
 
 function CDP.ProfileNames()
     local names = {}
-    for name in pairs(CDP.db.profiles or {}) do names[#names + 1] = name end
+    for name in pairs(CDP.Profile.account.profiles or {}) do names[#names + 1] = name end
     table.sort(names, function(a, b) return a:lower() < b:lower() end)
     return names
 end
@@ -589,20 +608,20 @@ function CDP.SaveProfile(name)
     for k, v in pairs(CDP.db) do
         if not PROFILE_SKIP[k] then snap[k] = DeepCopy(v) end
     end
-    CDP.db.profiles[name] = snap
-    CDP.db.activeProfile = name
+    CDP.Profile.account.profiles[name] = snap
+    CDP.Profile.account.activeProfile = name
     return true
 end
 
 function CDP.LoadProfile(name)
-    local snap = CDP.db.profiles and CDP.db.profiles[name]
+    local snap = CDP.Profile.account.profiles and CDP.Profile.account.profiles[name]
     if not snap then return false end
     for k, v in pairs(snap) do
         if not PROFILE_SKIP[k] then CDP.db[k] = DeepCopy(v) end
     end
     -- Anything the profile predates stays at whatever it is now; CopyDefaults has
     -- already guaranteed every key exists, so nothing can end up nil.
-    CDP.db.activeProfile = name
+    CDP.Profile.account.activeProfile = name
     if CDP.Pulse and CDP.Pulse.ApplySettings then CDP.Pulse:ApplySettings() end
     if CDP.RefreshOptions then CDP.RefreshOptions() end
     return true
@@ -631,25 +650,25 @@ local function SameSettings(a, b)
 end
 
 function CDP.ProfileStatus()
-    local name = CDP.db.activeProfile
-    local stored = name and CDP.db.profiles and CDP.db.profiles[name]
+    local name = CDP.Profile.account.activeProfile
+    local stored = name and CDP.Profile.account.profiles and CDP.Profile.account.profiles[name]
     if not stored then return nil, false end
     return name, SameSettings(ProfileSnapshot(), stored)
 end
 
 function CDP.DeleteProfile(name)
-    if not (CDP.db.profiles and CDP.db.profiles[name]) then return false end
-    CDP.db.profiles[name] = nil
+    if not (CDP.Profile.account.profiles and CDP.Profile.account.profiles[name]) then return false end
+    CDP.Profile.account.profiles[name] = nil
     return true
 end
 
 function CDP.RenameProfile(old, new)
     new = Trim(new)
     if new == "" then return false end
-    if not (CDP.db.profiles and CDP.db.profiles[old]) then return false end
-    if CDP.db.profiles[new] then return false end          -- never silently overwrite
-    CDP.db.profiles[new] = CDP.db.profiles[old]
-    CDP.db.profiles[old] = nil
+    if not (CDP.Profile.account.profiles and CDP.Profile.account.profiles[old]) then return false end
+    if CDP.Profile.account.profiles[new] then return false end          -- never silently overwrite
+    CDP.Profile.account.profiles[new] = CDP.Profile.account.profiles[old]
+    CDP.Profile.account.profiles[old] = nil
     return true
 end
 
@@ -1527,7 +1546,9 @@ local function RegisterWithSuite()
         icon      = "Interface\\AddOns\\nugsCooldownPulse\\icon",
         slash     = "/ncp",
         Open      = function() CDP.ToggleOptions() end,
-        GetDB     = function() return CooldownPulseDB, CDP.defaults end,
+        -- This character's settings, not the account container.
+        GetDB     = function() return CDP.db, CDP.defaults end,
+        Profile   = CDP.Profile,
         GetCharDB = function() return CooldownPulseCharDB, CDP.charDefaults end,
         -- Published so the other nugs addons can offer the same cues. A function
         -- rather than the table itself: this runs before the saved variables exist,
@@ -1564,6 +1585,7 @@ events:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
         end
 
     elseif event == "PLAYER_LOGIN" then
+        CDP.Profile:Attach()
         CDP.RebuildCatalog()
         CDP.Quiet(3.0)
 

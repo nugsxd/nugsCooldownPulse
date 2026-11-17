@@ -46,15 +46,22 @@ function Pulse:Init()
     anchor:SetSize(db.size, db.size)
     anchor:SetPoint(db.anchor.point, UIParent, db.anchor.point, db.anchor.x, db.anchor.y)
     anchor:SetFrameStrata("HIGH")
-    anchor:SetMovable(true)
     anchor:SetClampedToScreen(true)
     anchor:EnableMouse(false)
-    anchor:RegisterForDrag("LeftButton")
-    anchor:SetScript("OnDragStart", function(self) self:StartMoving() end)
-    anchor:SetScript("OnDragStop", function(self)
-        self:StopMovingOrSizing()
-        SavePosition()
-    end)
+
+    -- Dragging, from the shared nugsMove.lua. Read the note at the top of that file:
+    -- it asserts that a frame nobody is holding is not moving, rather than closing one
+    -- more route by which a move could be left running.
+    CDP.InstallMove(anchor, {
+        label = "the pulse anchor",
+        -- The mouse belongs to the lock state, not to this call - the line above turns
+        -- it OFF at birth so every click lands in the world until the anchor is
+        -- unlocked. Enabling it here would make an invisible frame eat clicks.
+        mouse = false,
+        -- Runs however the move ended, including when the invariant ended it because
+        -- the mouse-up never arrived.
+        onEnd = function() SavePosition() end,
+    })
 
     -- Unlocked-only visuals.
     anchor.bg = anchor:CreateTexture(nil, "BACKGROUND")
